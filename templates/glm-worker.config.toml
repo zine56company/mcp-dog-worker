@@ -1,0 +1,15 @@
+model = "glm-5.3-flash"
+model_provider = "phoenix-grove-worker"
+model_catalog_json = "__MCP_ROOT__/codex-home/glm-model.json"
+model_reasoning_effort = "low"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[model_providers.phoenix-grove-worker]
+name = "Phoenix Grove GLM 5.3 Flash"
+base_url = "https://api.pgsgrove.com/v1"
+env_key = "WORKER_PROXY_BEARER"
+wire_api = "responses"
+request_max_retries = 4
+stream_max_retries = 10
+stream_idle_timeout_ms = 300000

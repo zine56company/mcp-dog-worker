@@ -1,0 +1,12 @@
+model = "deepseek-v4-flash"
+model_provider = "deepseek-worker"
+model_catalog_json = "__MCP_ROOT__/codex-home/deepseek-model.json"
+model_reasoning_effort = "low"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[model_providers.deepseek-worker]
+name = "DeepSeek V4 Flash"
+base_url = "https://api.deepseek.com/"
+env_key = "WORKER_PROXY_BEARER"
+wire_api = "responses"

@@ -1,6 +1,9 @@
 node_modules/
 runs/
 codex-home/
+.env
+.env.*
+!.env.example
 
 # Local credential/bootstrap helpers are machine-specific and may contain secrets.
 configure-phoenix-grove-key.sh
