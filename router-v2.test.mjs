@@ -25,6 +25,7 @@ async function fixture() {
     `#!/usr/bin/env node
 const prompt = process.argv.at(-1) ?? "";
 console.log("fake-start:" + prompt);
+if (prompt.includes("huge")) process.stdout.write("A".repeat(4096) + "\\nfinal-tail-marker\\n");
 const delay = prompt.includes("cancel") ? 30000 : prompt.includes("slow") ? 1200 : 100;
 setTimeout(() => { console.log("fake-finish:" + prompt); }, delay);
 `,
@@ -51,6 +52,8 @@ async function connect(values) {
       QWEN_WORKER_CODEX_HOME: values.workerHome,
       QWEN_RUN_ROOT: values.runRoot,
       QWEN_RUNNER: runner,
+      ...(values.logLimit ? { WORKER_LOG_LIMIT_BYTES: String(values.logLimit) } : {}),
+      ...(values.logTail ? { WORKER_LOG_TAIL_BYTES: String(values.logTail) } : {}),
       DEEPSEEK_API_KEY: "test-only-placeholder"
     },
     stderr: "pipe"
@@ -118,6 +121,23 @@ test("async run exposes heartbeat, incremental logs, and durable completion", as
       await readFile(path.join(values.runRoot, run.run_id, "completion.json"), "utf8")
     );
     assert.equal(marker.status, "completed");
+  } finally {
+    await client.close();
+  }
+});
+
+test("truncated logs retain a bounded rolling tail with the final worker output", async () => {
+  const values = { ...(await fixture()), logLimit: 1024, logTail: 2048 };
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "huge output");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.log_truncated, true);
+    assert.equal(Buffer.byteLength(terminal.log), 1024);
+    assert.doesNotMatch(terminal.log, /final-tail-marker/);
+    assert.match(terminal.log_tail, /final-tail-marker/);
+    assert(terminal.log_tail_bytes <= values.logTail);
   } finally {
     await client.close();
   }

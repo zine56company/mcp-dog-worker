@@ -223,6 +223,32 @@ async function readLog(runId, afterOffset, maxChars) {
   }
 }
 
+async function readLogTail(runId, maxChars) {
+  const tailPath = path.join(runDirectory(runId), "worker-tail.log");
+  const limit = Number.isSafeInteger(maxChars)
+    ? Math.max(0, Math.min(maxChars, MAX_LOG_CHARS))
+    : DEFAULT_LOG_CHARS;
+  if (limit === 0) return { log_tail: "", log_tail_bytes: 0 };
+  let handle;
+  try {
+    handle = await open(tailPath, "r");
+    const info = await handle.stat();
+    const bytesToRead = Math.min(limit, info.size);
+    const start = info.size - bytesToRead;
+    const buffer = Buffer.alloc(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, start);
+    return {
+      log_tail: buffer.subarray(0, bytesRead).toString("utf8"),
+      log_tail_bytes: info.size
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { log_tail: "", log_tail_bytes: 0 };
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
 function publicRun(run) {
   return {
     run_id: run.run_id,
@@ -248,7 +274,10 @@ async function statusWithLog(args) {
   validateRunId(args?.run_id);
   const run = await reconcileRun(await readRun(args.run_id));
   const log = await readLog(args.run_id, args.after_offset ?? 0, args.max_chars ?? DEFAULT_LOG_CHARS);
-  return { ...publicRun(run), ...log };
+  const tail = run.log_truncated
+    ? await readLogTail(args.run_id, args.max_chars ?? DEFAULT_LOG_CHARS)
+    : { log_tail: "", log_tail_bytes: 0 };
+  return { ...publicRun(run), ...log, ...tail };
 }
 
 async function startWorker(worker, args) {
@@ -388,11 +417,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       : []),
     statusToolDefinition(
       "worker_status",
-      "Returns durable worker state, heartbeat, completion marker, and incremental logs."
+      "Returns durable worker state, heartbeat, completion marker, incremental logs, and a rolling tail after truncation."
     ),
     statusToolDefinition(
       "wait_worker",
-      "Waits briefly for progress or completion and returns durable state plus incremental logs.",
+      "Waits briefly for progress or completion and returns durable state, incremental logs, and a rolling tail after truncation.",
       true
     ),
     {

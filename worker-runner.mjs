@@ -14,10 +14,12 @@ const statusPath = path.join(runDirectory, "status.json");
 const completionPath = path.join(runDirectory, "completion.json");
 const jobPath = path.join(runDirectory, "job.json");
 const logPath = path.join(runDirectory, "worker.log");
+const logTailPath = path.join(runDirectory, "worker-tail.log");
 const cancelPath = path.join(runDirectory, "cancel.requested");
 const LOCK_POLL_MS = 1000;
 const HEARTBEAT_MS = 5000;
-const LOG_LIMIT_BYTES = 16 * 1024 * 1024;
+const LOG_LIMIT_BYTES = boundedIntegerEnv("WORKER_LOG_LIMIT_BYTES", 16 * 1024 * 1024, 1024, 64 * 1024 * 1024);
+const LOG_TAIL_BYTES = boundedIntegerEnv("WORKER_LOG_TAIL_BYTES", 512 * 1024, 1024, 4 * 1024 * 1024);
 const bearer = process.env.WORKER_UPSTREAM_BEARER;
 if (!bearer) throw new Error("WORKER_UPSTREAM_BEARER is required");
 delete process.env.WORKER_UPSTREAM_BEARER;
@@ -34,8 +36,15 @@ let heartbeat = null;
 let cancelRequested = false;
 let logBytes = 0;
 let logTruncated = false;
+let logTail = Buffer.alloc(0);
+let logTailDirty = false;
 let statusQueue = Promise.resolve();
 let logQueue = Promise.resolve();
+
+function boundedIntegerEnv(name, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,18 +89,41 @@ async function fileExists(target) {
 function appendLog(chunk) {
   const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
   logQueue = logQueue.then(async () => {
-    if (logBytes >= LOG_LIMIT_BYTES) return;
-    const remaining = LOG_LIMIT_BYTES - logBytes;
-    const accepted = buffer.subarray(0, remaining);
-    if (accepted.length > 0) {
-      await appendFile(logPath, accepted, { mode: 0o600 });
-      logBytes += accepted.length;
-    }
-    if (accepted.length < buffer.length && !logTruncated) {
+    const combinedTail = Buffer.concat([logTail, buffer]);
+    logTail = combinedTail.subarray(Math.max(0, combinedTail.length - LOG_TAIL_BYTES));
+    logTailDirty = true;
+
+    if (logBytes < LOG_LIMIT_BYTES) {
+      const remaining = LOG_LIMIT_BYTES - logBytes;
+      const accepted = buffer.subarray(0, remaining);
+      if (accepted.length > 0) {
+        await appendFile(logPath, accepted, { mode: 0o600 });
+        logBytes += accepted.length;
+      }
+      if (accepted.length < buffer.length && !logTruncated) {
+        logTruncated = true;
+        await patchStatus({ log_truncated: true });
+        await flushTailLogNow();
+      }
+    } else if (!logTruncated) {
       logTruncated = true;
       await patchStatus({ log_truncated: true });
+      await flushTailLogNow();
     }
   });
+  return logQueue;
+}
+
+async function flushTailLogNow() {
+  if (!logTruncated || !logTailDirty) return;
+  const temporary = `${logTailPath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(temporary, logTail, { mode: 0o600 });
+  await rename(temporary, logTailPath);
+  logTailDirty = false;
+}
+
+function flushTailLog() {
+  logQueue = logQueue.then(flushTailLogNow);
   return logQueue;
 }
 
@@ -225,7 +257,7 @@ async function startProxy() {
 
 async function finish(status, exitCode, error = null) {
   if (heartbeat) clearInterval(heartbeat);
-  await logQueue;
+  await flushTailLog();
   const finishedAt = nowIso();
   await patchStatus({
     status,
@@ -316,6 +348,7 @@ try {
     });
     heartbeat = setInterval(() => {
       void patchStatus({ heartbeat_at: nowIso() }).catch(() => undefined);
+      void flushTailLog().catch(() => undefined);
     }, HEARTBEAT_MS);
     child.stdout.on("data", chunk => void appendLog(chunk));
     child.stderr.on("data", chunk => void appendLog(chunk));

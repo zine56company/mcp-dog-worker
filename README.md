@@ -42,8 +42,9 @@ Durable state lives under `runs/<run_id>/`. A terminal run has both `completion_
 the canonical workspace path, so two router processes cannot write to the same workspace at once.
 
 Run tools are asynchronous by design: an MCP timeout while waiting does not imply worker failure and
-does not orphan the job. Logs are capped at 16 MiB per run. Roll back by pointing `start.sh` back to
-`router.mjs`.
+does not orphan the job. The sequential log is capped at 16 MiB per run. After that cap, status calls
+also return `log_tail`, a rolling 512 KiB tail that retains the worker's latest progress and final
+report without allowing unbounded disk growth. Roll back by pointing `start.sh` back to `router.mjs`.
 
 For administration while an existing Codex thread still holds the old stdio transport, use
 `node worker-client.mjs list`, `status <run_id>`, `wait <run_id>`, `cancel <run_id>`, or `runs`.
