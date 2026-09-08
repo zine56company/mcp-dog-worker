@@ -1,0 +1,14 @@
+{
+  "name": "mcp-dog-worker",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test router-v2.test.mjs",
+    "worker": "node worker-client.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.24.0"
+  }
+}

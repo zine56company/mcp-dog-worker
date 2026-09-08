@@ -1,0 +1,12 @@
+node_modules/
+runs/
+codex-home/
+
+# Local credential/bootstrap helpers are machine-specific and may contain secrets.
+configure-phoenix-grove-key.sh
+
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
