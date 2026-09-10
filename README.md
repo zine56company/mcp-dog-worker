@@ -24,7 +24,7 @@ Register the absolute launcher path in Codex:
 [mcp_servers.qwen_worker]
 command = "/absolute/path/to/mcp-dog-worker/start.sh"
 startup_timeout_sec = 30
-tool_timeout_sec = 300
+tool_timeout_sec = 7200
 ```
 
 Reload the Codex/VS Code window after changing MCP configuration. Run
@@ -45,6 +45,8 @@ Run tools are asynchronous by design: an MCP timeout while waiting does not impl
 does not orphan the job. The sequential log is capped at 16 MiB per run. After that cap, status calls
 also return `log_tail`, a rolling 512 KiB tail that retains the worker's latest progress and final
 report without allowing unbounded disk growth. Roll back by pointing `start.sh` back to `router.mjs`.
+For large repositories, configure Codex with a two-hour MCP tool timeout (`7200` seconds). Keep status
+polls short enough to report progress; their timeout is not the worker's lifetime limit.
 
 For administration while an existing Codex thread still holds the old stdio transport, use
 `node worker-client.mjs list`, `status <run_id>`, `wait <run_id>`, `cancel <run_id>`, or `runs`.
