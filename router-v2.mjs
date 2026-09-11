@@ -266,6 +266,11 @@ function publicRun(run) {
     exit_code: run.exit_code ?? null,
     completion_marker: Boolean(run.completion_marker),
     log_truncated: Boolean(run.log_truncated),
+    cargo_target_directory: run.cargo_target_directory ?? null,
+    managed_temp_directory: run.managed_temp_directory ?? null,
+    disk_free_bytes: run.disk_free_bytes ?? null,
+    disk_min_free_bytes: run.disk_min_free_bytes ?? null,
+    disk_checked_at: run.disk_checked_at ?? null,
     error: run.error ?? null
   };
 }

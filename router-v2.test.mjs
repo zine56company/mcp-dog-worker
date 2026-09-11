@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,16 +23,37 @@ async function fixture() {
   await writeFile(
     fakeCodex,
     `#!/usr/bin/env node
+import { spawn } from "node:child_process";
 const prompt = process.argv.at(-1) ?? "";
 console.log("fake-start:" + prompt);
 if (prompt.includes("huge")) process.stdout.write("A".repeat(4096) + "\\nfinal-tail-marker\\n");
+if (prompt.includes("show-env")) {
+  console.log("worker-env:" + JSON.stringify({
+    cargoTarget: process.env.CARGO_TARGET_DIR,
+    cargoIncremental: process.env.CARGO_INCREMENTAL,
+    devDebug: process.env.CARGO_PROFILE_DEV_DEBUG,
+    testDebug: process.env.CARGO_PROFILE_TEST_DEBUG,
+    temp: process.env.TMPDIR
+  }));
+}
+if (prompt.includes("descendant")) {
+  const code = "setTimeout(() => { const fs = require('node:fs'); fs.mkdirSync(process.env.TMPDIR, { recursive: true }); fs.writeFileSync(process.env.TMPDIR + '/descendant-marker', 'orphan'); }, 1500); setTimeout(() => {}, 5000);";
+  spawn(process.execPath, ["-e", code], { env: process.env, stdio: "ignore" });
+}
 const delay = prompt.includes("cancel") ? 30000 : prompt.includes("slow") ? 1200 : 100;
 setTimeout(() => { console.log("fake-finish:" + prompt); }, delay);
 `,
     { mode: 0o700 }
   );
   await chmod(fakeCodex, 0o700);
-  return { root, workspace, workerHome, runRoot, fakeCodex };
+  return {
+    root,
+    workspace,
+    workerHome,
+    runRoot,
+    fakeCodex,
+    cleanup: () => rm(root, { recursive: true, force: true })
+  };
 }
 
 function decode(result) {
@@ -54,6 +75,8 @@ async function connect(values) {
       QWEN_RUNNER: runner,
       ...(values.logLimit ? { WORKER_LOG_LIMIT_BYTES: String(values.logLimit) } : {}),
       ...(values.logTail ? { WORKER_LOG_TAIL_BYTES: String(values.logTail) } : {}),
+      ...(values.minFreeBytes ? { WORKER_MIN_FREE_BYTES: String(values.minFreeBytes) } : {}),
+      WORKER_TERMINATION_GRACE_MS: "500",
       DEEPSEEK_API_KEY: "test-only-placeholder"
     },
     stderr: "pipe"
@@ -123,6 +146,7 @@ test("async run exposes heartbeat, incremental logs, and durable completion", as
     assert.equal(marker.status, "completed");
   } finally {
     await client.close();
+    await values.cleanup();
   }
 });
 
@@ -140,6 +164,46 @@ test("truncated logs retain a bounded rolling tail with the final worker output"
     assert(terminal.log_tail_bytes <= values.logTail);
   } finally {
     await client.close();
+    await values.cleanup();
+  }
+});
+
+test("worker reuses the workspace target with bounded Cargo profiles and managed temporary files", async () => {
+  const values = await fixture();
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "show-env");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "completed");
+    const match = terminal.log.match(/worker-env:(\{[^\n]+\})/);
+    assert(match, "worker must report its managed build environment");
+    const environment = JSON.parse(match[1]);
+    assert.equal(environment.cargoTarget, path.join(terminal.working_directory, "target"));
+    assert.equal(environment.cargoIncremental, "0");
+    assert.equal(environment.devDebug, "0");
+    assert.equal(environment.testDebug, "0");
+    assert.equal(environment.temp, path.join(values.runRoot, run.run_id, "tmp"));
+    assert.match(terminal.log, /Never override CARGO_TARGET_DIR/);
+    await assert.rejects(stat(environment.temp), error => error?.code === "ENOENT");
+  } finally {
+    await client.close();
+    await values.cleanup();
+  }
+});
+
+test("disk preflight refuses to launch below the configured reserve", async () => {
+  const values = { ...(await fixture()), minFreeBytes: Number.MAX_SAFE_INTEGER };
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "must-not-start");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "failed");
+    assert.match(terminal.error, /disk safety preflight failed/);
+    assert.doesNotMatch(terminal.log, /fake-start/);
+    assert.equal(terminal.disk_min_free_bytes, Number.MAX_SAFE_INTEGER);
+  } finally {
+    await client.close();
+    await values.cleanup();
   }
 });
 
@@ -204,7 +268,33 @@ test("editing runs serialize per workspace and a running job can be cancelled", 
     const cancelled = await waitTerminal(client, cancellable.run_id);
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.completion_marker, true);
+
+    const descendant = await start(client, values.workspace, "cancel descendant", false);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = decode(
+        await client.callTool({
+          name: "worker_status",
+          arguments: { run_id: descendant.run_id, max_chars: 0 }
+        })
+      );
+      if (current.status === "running") break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    decode(
+      await client.callTool({
+        name: "cancel_worker",
+        arguments: { run_id: descendant.run_id }
+      })
+    );
+    const descendantCancelled = await waitTerminal(client, descendant.run_id);
+    assert.equal(descendantCancelled.status, "cancelled");
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    await assert.rejects(
+      stat(path.join(values.runRoot, descendant.run_id, "tmp", "descendant-marker")),
+      error => error?.code === "ENOENT"
+    );
   } finally {
     await client.close();
+    await values.cleanup();
   }
 });
