@@ -40,7 +40,7 @@ if (prompt.includes("descendant")) {
   const code = "setTimeout(() => { const fs = require('node:fs'); fs.mkdirSync(process.env.TMPDIR, { recursive: true }); fs.writeFileSync(process.env.TMPDIR + '/descendant-marker', 'orphan'); }, 1500); setTimeout(() => {}, 5000);";
   spawn(process.execPath, ["-e", code], { env: process.env, stdio: "ignore" });
 }
-const delay = prompt.includes("cancel") ? 30000 : prompt.includes("slow") ? 1200 : 100;
+const delay = prompt.includes("cancel") ? 30000 : prompt.includes("lock") ? 5000 : prompt.includes("slow") ? 1200 : 100;
 setTimeout(() => { console.log("fake-finish:" + prompt); }, delay);
 `,
     { mode: 0o700 }
@@ -231,11 +231,14 @@ test("editing runs serialize per workspace and a running job can be cancelled", 
   const values = await fixture();
   const { client } = await connect(values);
   try {
-    const first = await start(client, values.workspace, "slow first", true);
-    const second = await start(client, values.workspace, "slow second", true);
+    const first = await start(client, values.workspace, "lock first", true);
+    const second = await start(client, values.workspace, "lock second", true);
     let ownerRun = null;
     let queuedRun = null;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    // Runner startup includes real disk preflights and sandbox setup, which can
+    // exceed two seconds on a loaded host. Give the lock state time to become
+    // observable instead of turning host latency into a false negative.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       const [firstStatus, secondStatus] = await Promise.all(
         [first.run_id, second.run_id].map(async runId =>
           decode(

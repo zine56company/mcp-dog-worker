@@ -29,7 +29,7 @@ const MIN_FREE_BYTES = boundedIntegerEnv(
 );
 const MAX_TARGET_BYTES = boundedIntegerEnv(
   "WORKER_MAX_TARGET_BYTES",
-  16 * GIBIBYTE,
+  32 * GIBIBYTE,
   1024 * 1024,
   Number.MAX_SAFE_INTEGER
 );

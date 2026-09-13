@@ -64,7 +64,7 @@ worker cannot freely populate the host's global `/tmp` tree.
 The supervisor measures both free space and the shared Cargo target before
 launch and every five seconds while the worker runs. It refuses to start, or
 terminates the complete worker process group, when available space falls below
-the default 12 GiB reserve or the target grows beyond 16 GiB. Status responses
+the default 12 GiB reserve or the target grows beyond 32 GiB. Status responses
 expose `disk_free_bytes`, `disk_min_free_bytes`, `cargo_target_bytes`,
 `cargo_target_max_bytes`, `cargo_target_directory`, and
 `managed_temp_directory`. Override the defaults only in the private `.env`
