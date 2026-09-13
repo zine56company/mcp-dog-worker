@@ -267,6 +267,8 @@ function publicRun(run) {
     completion_marker: Boolean(run.completion_marker),
     log_truncated: Boolean(run.log_truncated),
     cargo_target_directory: run.cargo_target_directory ?? null,
+    cargo_target_bytes: run.cargo_target_bytes ?? null,
+    cargo_target_max_bytes: run.cargo_target_max_bytes ?? null,
     managed_temp_directory: run.managed_temp_directory ?? null,
     disk_free_bytes: run.disk_free_bytes ?? null,
     disk_min_free_bytes: run.disk_min_free_bytes ?? null,

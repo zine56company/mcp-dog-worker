@@ -76,6 +76,7 @@ async function connect(values) {
       ...(values.logLimit ? { WORKER_LOG_LIMIT_BYTES: String(values.logLimit) } : {}),
       ...(values.logTail ? { WORKER_LOG_TAIL_BYTES: String(values.logTail) } : {}),
       ...(values.minFreeBytes ? { WORKER_MIN_FREE_BYTES: String(values.minFreeBytes) } : {}),
+      ...(values.maxTargetBytes ? { WORKER_MAX_TARGET_BYTES: String(values.maxTargetBytes) } : {}),
       WORKER_TERMINATION_GRACE_MS: "500",
       DEEPSEEK_API_KEY: "test-only-placeholder"
     },
@@ -201,6 +202,25 @@ test("disk preflight refuses to launch below the configured reserve", async () =
     assert.match(terminal.error, /disk safety preflight failed/);
     assert.doesNotMatch(terminal.log, /fake-start/);
     assert.equal(terminal.disk_min_free_bytes, Number.MAX_SAFE_INTEGER);
+  } finally {
+    await client.close();
+    await values.cleanup();
+  }
+});
+
+test("target-size preflight refuses to launch above the configured cap", async () => {
+  const values = { ...(await fixture()), maxTargetBytes: 1024 * 1024 };
+  await mkdir(path.join(values.workspace, "target"), { recursive: true });
+  await writeFile(path.join(values.workspace, "target", "oversized.bin"), Buffer.alloc(2 * 1024 * 1024));
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "must-not-start-target");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "failed");
+    assert.match(terminal.error, /Cargo target size preflight failed/);
+    assert.doesNotMatch(terminal.log, /fake-start/);
+    assert(terminal.cargo_target_bytes > terminal.cargo_target_max_bytes);
+    assert.equal(terminal.cargo_target_max_bytes, values.maxTargetBytes);
   } finally {
     await client.close();
     await values.cleanup();

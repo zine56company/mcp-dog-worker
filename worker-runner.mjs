@@ -27,6 +27,12 @@ const MIN_FREE_BYTES = boundedIntegerEnv(
   512 * 1024 * 1024,
   Number.MAX_SAFE_INTEGER
 );
+const MAX_TARGET_BYTES = boundedIntegerEnv(
+  "WORKER_MAX_TARGET_BYTES",
+  16 * GIBIBYTE,
+  1024 * 1024,
+  Number.MAX_SAFE_INTEGER
+);
 const DISK_CHECK_MS = boundedIntegerEnv("WORKER_DISK_CHECK_MS", 5000, 1000, 60000);
 const TERMINATION_GRACE_MS = boundedIntegerEnv("WORKER_TERMINATION_GRACE_MS", 5000, 500, 30000);
 const CARGO_DEBUG_LEVEL = boundedIntegerEnv("WORKER_CARGO_DEBUG", 0, 0, 2);
@@ -150,6 +156,36 @@ async function freeBytes(target) {
   const values = await statfs(target, { bigint: true });
   const available = values.bavail * values.bsize;
   return available > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(available);
+}
+
+async function directoryBytes(target) {
+  if (!(await fileExists(target))) return 0;
+  return await new Promise((resolve, reject) => {
+    const probe = spawn("/usr/bin/du", ["-sk", target], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    probe.stdout.setEncoding("utf8");
+    probe.stderr.setEncoding("utf8");
+    probe.stdout.on("data", chunk => {
+      if (stdout.length < 4096) stdout += chunk;
+    });
+    probe.stderr.on("data", chunk => {
+      if (stderr.length < 4096) stderr += chunk;
+    });
+    probe.once("error", reject);
+    probe.once("close", code => {
+      if (code !== 0) {
+        reject(new Error(`du failed for ${target}: ${stderr.trim() || `exit ${code}`}`));
+        return;
+      }
+      const kibibytes = Number.parseInt(stdout.trim().split(/\s+/, 1)[0] ?? "", 10);
+      if (!Number.isSafeInteger(kibibytes) || kibibytes < 0) {
+        reject(new Error(`du returned an invalid size for ${target}`));
+        return;
+      }
+      resolve(kibibytes * 1024);
+    });
+  });
 }
 
 function formatGibibytes(bytes) {
@@ -382,17 +418,22 @@ async function enforceDiskReserve() {
   if (diskCheckInFlight || resourceAbortReason || cancelRequested) return;
   diskCheckInFlight = true;
   try {
-    const available = await freeBytes(job.working_directory);
+    const [available, targetBytes] = await Promise.all([
+      freeBytes(job.working_directory),
+      directoryBytes(cargoTargetDirectory)
+    ]);
     const checkedAt = nowIso();
     await patchStatus({
       disk_free_bytes: available,
       disk_min_free_bytes: MIN_FREE_BYTES,
+      cargo_target_bytes: targetBytes,
+      cargo_target_max_bytes: MAX_TARGET_BYTES,
       disk_checked_at: checkedAt
     });
-    if (available >= MIN_FREE_BYTES) return;
-    resourceAbortReason =
-      `disk safety reserve reached: ${formatGibibytes(available)} free, ` +
-      `${formatGibibytes(MIN_FREE_BYTES)} required`;
+    if (available >= MIN_FREE_BYTES && targetBytes <= MAX_TARGET_BYTES) return;
+    resourceAbortReason = available < MIN_FREE_BYTES
+      ? `disk safety reserve reached: ${formatGibibytes(available)} free, ${formatGibibytes(MIN_FREE_BYTES)} required`
+      : `Cargo target size limit reached: ${formatGibibytes(targetBytes)} used, ${formatGibibytes(MAX_TARGET_BYTES)} allowed`;
     await appendLog(`\n[worker-runner] ${resourceAbortReason}; terminating worker process group\n`);
     await patchStatus({ status: "cancelling", error: resourceAbortReason, heartbeat_at: checkedAt });
     if (child && processGroupAlive(child.pid)) {
@@ -409,7 +450,10 @@ process.on("SIGINT", () => void requestCancellation());
 
 let proxy = null;
 try {
-  const initialFreeBytes = await freeBytes(job.working_directory);
+  const [initialFreeBytes, initialTargetBytes] = await Promise.all([
+    freeBytes(job.working_directory),
+    directoryBytes(cargoTargetDirectory)
+  ]);
   await patchStatus({
     supervisor_pid: process.pid,
     heartbeat_at: nowIso(),
@@ -417,11 +461,20 @@ try {
     managed_temp_directory: managedTempDirectory,
     disk_free_bytes: initialFreeBytes,
     disk_min_free_bytes: MIN_FREE_BYTES,
+    cargo_target_bytes: initialTargetBytes,
+    cargo_target_max_bytes: MAX_TARGET_BYTES,
     disk_checked_at: nowIso()
   });
   await acquireWriteLock();
-  const launchFreeBytes = await freeBytes(job.working_directory);
-  await patchStatus({ disk_free_bytes: launchFreeBytes, disk_checked_at: nowIso() });
+  const [launchFreeBytes, launchTargetBytes] = await Promise.all([
+    freeBytes(job.working_directory),
+    directoryBytes(cargoTargetDirectory)
+  ]);
+  await patchStatus({
+    disk_free_bytes: launchFreeBytes,
+    cargo_target_bytes: launchTargetBytes,
+    disk_checked_at: nowIso()
+  });
   if (cancelRequested || (await fileExists(cancelPath))) {
     cancelRequested = true;
     await finish("cancelled", null, "cancelled before worker launch");
@@ -429,6 +482,12 @@ try {
     resourceAbortReason =
       `disk safety preflight failed: ${formatGibibytes(launchFreeBytes)} free, ` +
       `${formatGibibytes(MIN_FREE_BYTES)} required`;
+    await appendLog(`[worker-runner] ${resourceAbortReason}; worker was not launched\n`);
+    await finish("failed", null, resourceAbortReason);
+  } else if (launchTargetBytes > MAX_TARGET_BYTES) {
+    resourceAbortReason =
+      `Cargo target size preflight failed: ${formatGibibytes(launchTargetBytes)} used, ` +
+      `${formatGibibytes(MAX_TARGET_BYTES)} allowed`;
     await appendLog(`[worker-runner] ${resourceAbortReason}; worker was not launched\n`);
     await finish("failed", null, resourceAbortReason);
   } else {
@@ -449,6 +508,7 @@ try {
       "Never override CARGO_TARGET_DIR or create an isolated Cargo target under /tmp or elsewhere.",
       "Do not run cargo clean. Prefer existing evidence and the narrowest verification command that proves the task.",
       "Do not launch a broader build after the requested verification has already passed.",
+      `The supervisor will terminate the whole worker process group if Cargo target exceeds ${formatGibibytes(MAX_TARGET_BYTES)}.`,
       `The supervisor will terminate the whole worker process group below ${formatGibibytes(MIN_FREE_BYTES)} free.`
     ].join("\n");
     const delegatedPrompt = `${job.prompt}\n\n${resourcePolicy}`;
