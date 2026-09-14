@@ -53,13 +53,20 @@ tool_timeout_sec = 7200
 
 Reload the Codex/VS Code window after changing MCP configuration. Run
 `npm test` to verify async completion, logs, locking, and cancellation without
-calling a paid provider. macOS uses `sandbox-exec`; Windows uses Codex's native `read-only` or
-`workspace-write` sandbox and `taskkill /T` for descendant-safe cancellation. Linux is not yet
-supported.
+calling a paid provider. macOS uses `sandbox-exec`. The Windows 10 compatibility default uses Codex
+`danger-full-access` because native sandbox process creation is unreliable on that platform;
+workspace validation, secret scrubbing, write locks, disk guards, logical read-only instructions,
+and supervisor review remain active. Set `WORKER_WINDOWS_SANDBOX_MODE=workspace-write` only after a
+real delegated shell smoke test passes on the host. Windows cancellation uses `taskkill /T` so
+descendants do not survive. Linux is not yet supported.
 
 Provider credentials stay in the trusted router/supervisor and reach the provider through a
 per-run loopback proxy. The delegated Codex process receives placeholder proxy credentials, and
-secret-like host environment variables are removed before it is launched.
+secret-like host environment variables and parent `CODEX_*` control-plane state are removed before
+it is launched. The isolated worker then receives only its own `CODEX_HOME`.
+The supervisor captures Codex's final message separately as `worker_result` and truncates it to
+`WORKER_MAX_OUTPUT_CHARS` Unicode characters (500 by default on Windows), independently of the
+bounded diagnostic log chunks.
 Windows defaults each returned status/log chunk to 500 characters, and the delegated prompt also
 requires a final response of at most 500 characters. Override `WORKER_MAX_OUTPUT_CHARS` only when a
 larger diagnostic payload is explicitly needed.

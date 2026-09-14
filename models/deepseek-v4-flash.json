@@ -27,7 +27,7 @@
         { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
       ],
       "truncation_policy": { "mode": "tokens", "limit": 10000 },
-      "shell_type": "shell_command",
+      "shell_type": "unified_exec",
       "visibility": "list",
       "minimal_client_version": "0.144.0",
       "supported_in_api": true,

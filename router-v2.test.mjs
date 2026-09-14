@@ -25,7 +25,13 @@ async function fixture() {
     fakeCodex,
     `#!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 const prompt = process.argv.at(-1) ?? "";
+const finalMessageIndex = process.argv.indexOf("--output-last-message");
+if (finalMessageIndex >= 0) {
+  const result = prompt.includes("long-final") ? "R".repeat(700) : "fake-result:" + prompt;
+  writeFileSync(process.argv[finalMessageIndex + 1], result);
+}
 console.log("fake-start:" + prompt);
 if (prompt.includes("huge")) process.stdout.write("A".repeat(4096) + "\\nfinal-tail-marker\\n");
 if (prompt.includes("show-env")) {
@@ -37,6 +43,7 @@ if (prompt.includes("show-env")) {
     testDebug: process.env.CARGO_PROFILE_TEST_DEBUG,
     temp: process.env.TMPDIR,
     secretLeak: process.env.TEST_SUPER_SECRET ?? null,
+    parentPermission: process.env.CODEX_PERMISSION_PROFILE ?? null,
     sandbox: sandboxIndex >= 0 ? process.argv[sandboxIndex + 1] : null
   }));
 }
@@ -84,6 +91,7 @@ async function connect(values) {
       ...(values.outputLimit ? { WORKER_MAX_OUTPUT_CHARS: String(values.outputLimit) } : {}),
       WORKER_TERMINATION_GRACE_MS: "500",
       TEST_SUPER_SECRET: "must-not-reach-worker",
+      CODEX_PERMISSION_PROFILE: ":danger-full-access",
       DEEPSEEK_API_KEY: "test-only-placeholder"
     },
     stderr: "pipe"
@@ -205,9 +213,25 @@ test("worker reuses the workspace target with bounded Cargo profiles and managed
     assert.equal(environment.testDebug, "0");
     assert.equal(environment.temp, path.join(values.runRoot, run.run_id, "tmp"));
     assert.equal(environment.secretLeak, null);
-    assert.equal(environment.sandbox, process.platform === "win32" ? "read-only" : "danger-full-access");
+    assert.equal(environment.parentPermission, null);
+    assert.equal(environment.sandbox, "danger-full-access");
     assert.match(terminal.log, /Never override CARGO_TARGET_DIR/);
     await assert.rejects(stat(environment.temp), error => error?.code === "ENOENT");
+  } finally {
+    await client.close();
+    await values.cleanup();
+  }
+});
+
+test("final worker result is independently capped", async () => {
+  const values = { ...(await fixture()), outputLimit: 500 };
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "long-final");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "completed");
+    assert.equal(Array.from(terminal.worker_result).length, values.outputLimit);
+    assert.equal(terminal.worker_result_truncated, true);
   } finally {
     await client.close();
     await values.cleanup();

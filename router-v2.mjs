@@ -284,7 +284,9 @@ function publicRun(run) {
     disk_free_bytes: run.disk_free_bytes ?? null,
     disk_min_free_bytes: run.disk_min_free_bytes ?? null,
     disk_checked_at: run.disk_checked_at ?? null,
-    error: run.error ?? null
+    error: run.error ?? null,
+    worker_result: run.worker_result ?? null,
+    worker_result_truncated: Boolean(run.worker_result_truncated)
   };
 }
 

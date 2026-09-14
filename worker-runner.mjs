@@ -15,6 +15,7 @@ const completionPath = path.join(runDirectory, "completion.json");
 const jobPath = path.join(runDirectory, "job.json");
 const logPath = path.join(runDirectory, "worker.log");
 const logTailPath = path.join(runDirectory, "worker-tail.log");
+const finalMessagePath = path.join(runDirectory, "final-message.txt");
 const cancelPath = path.join(runDirectory, "cancel.requested");
 const IS_WINDOWS = process.platform === "win32";
 const LOCK_POLL_MS = 1000;
@@ -38,6 +39,7 @@ const MAX_TARGET_BYTES = boundedIntegerEnv(
 const DISK_CHECK_MS = boundedIntegerEnv("WORKER_DISK_CHECK_MS", 5000, 1000, 60000);
 const TERMINATION_GRACE_MS = boundedIntegerEnv("WORKER_TERMINATION_GRACE_MS", 5000, 500, 30000);
 const CARGO_DEBUG_LEVEL = boundedIntegerEnv("WORKER_CARGO_DEBUG", 0, 0, 2);
+const MAX_OUTPUT_CHARS = boundedIntegerEnv("WORKER_MAX_OUTPUT_CHARS", 500, 1, 100_000);
 const bearer = process.env.WORKER_UPSTREAM_BEARER;
 if (!bearer) throw new Error("WORKER_UPSTREAM_BEARER is required");
 delete process.env.WORKER_UPSTREAM_BEARER;
@@ -405,7 +407,7 @@ async function startProxy() {
       ...job.upstream_headers
     };
     delete headers.connection;
-    const forwarded = https.request(target, { method: request.method, headers }, upstreamResponse => {
+    const forwarded = https.request(target, { method: request.method, headers, agent: false }, upstreamResponse => {
       const responseHeaders = { ...upstreamResponse.headers };
       delete responseHeaders.connection;
       response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
@@ -432,6 +434,16 @@ async function finish(status, exitCode, error = null) {
   if (terminationTimer) clearTimeout(terminationTimer);
   await flushTailLog();
   await rm(managedTempDirectory, { recursive: true, force: true });
+  let workerResult = null;
+  let workerResultTruncated = false;
+  try {
+    const fullResult = (await readFile(finalMessagePath, "utf8")).trim();
+    const characters = Array.from(fullResult);
+    workerResultTruncated = characters.length > MAX_OUTPUT_CHARS;
+    workerResult = characters.slice(0, MAX_OUTPUT_CHARS).join("");
+  } catch (resultError) {
+    if (resultError?.code !== "ENOENT") throw resultError;
+  }
   const finishedAt = nowIso();
   await patchStatus({
     status,
@@ -441,7 +453,9 @@ async function finish(status, exitCode, error = null) {
     finished_at: finishedAt,
     queued_for_lock: false,
     completion_marker: true,
-    log_truncated: logTruncated
+    log_truncated: logTruncated,
+    worker_result: workerResult,
+    worker_result_truncated: workerResultTruncated
   });
   await atomicWriteJson(completionPath, {
     run_id: job.run_id,
@@ -554,6 +568,12 @@ try {
     const resourcePolicy = [
       "[mcp-dog-worker resource policy]",
       `Reuse the provided Cargo target directory: ${cargoTargetDirectory}`,
+      ...(IS_WINDOWS
+        ? ["Windows exec_command already runs PowerShell: pass PowerShell source directly; never prefix it with cmd.exe, powershell.exe, or pwsh.exe."]
+        : []),
+      ...(!job.allow_edits
+        ? ["This run is logically read-only. Do not create, edit, rename, or delete workspace files."]
+        : []),
       "Never override CARGO_TARGET_DIR or create an isolated Cargo target under /tmp or elsewhere.",
       "Do not run cargo clean. Prefer existing evidence and the narrowest verification command that proves the task.",
       "Do not launch a broader build after the requested verification has already passed.",
@@ -562,7 +582,9 @@ try {
       `The supervisor will terminate the whole worker process group below ${formatGibibytes(MIN_FREE_BYTES)} free.`
     ].join("\n");
     const delegatedPrompt = `${job.prompt}\n\n${resourcePolicy}`;
-    const sandboxMode = IS_WINDOWS ? (job.allow_edits ? "workspace-write" : "read-only") : "danger-full-access";
+    const sandboxMode = IS_WINDOWS
+      ? (process.env.WORKER_WINDOWS_SANDBOX_MODE ?? "danger-full-access")
+      : "danger-full-access";
     const args = [
       "exec",
       "--profile",
@@ -575,12 +597,17 @@ try {
       `model_providers.${workerConfig.provider}.base_url=\"${proxyBaseUrl}\"`,
       "--cd",
       job.working_directory,
+      "--output-last-message",
+      finalMessagePath,
       delegatedPrompt
     ];
     const secretNamePattern = /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|AUTH|CREDENTIAL|COOKIE|SESSION|BEARER|ACCESS[_-]?KEY)/i;
     const childEnv = Object.fromEntries(
       Object.entries(process.env).filter(([name]) =>
-        !secretNamePattern.test(name) && !name.startsWith("MCP_DOG_") && name !== "WORKER_UPSTREAM_BEARER"
+        !secretNamePattern.test(name) &&
+        !name.startsWith("MCP_DOG_") &&
+        !name.startsWith("CODEX_") &&
+        name !== "WORKER_UPSTREAM_BEARER"
       )
     );
     Object.assign(childEnv, {
@@ -610,6 +637,7 @@ try {
       );
       launchArgs.unshift("-p", seatbelt, launchCommand);
     }
+    await appendLog(`[worker-runner] launch platform=${process.platform} sandbox=${sandboxMode} allow_edits=${job.allow_edits}\n`);
     child = spawn(IS_WINDOWS ? launchCommand : "/usr/bin/sandbox-exec", launchArgs, {
       cwd: job.working_directory,
       env: childEnv,
@@ -674,7 +702,11 @@ try {
   if (cancelMonitor) clearInterval(cancelMonitor);
   if (diskMonitor) clearInterval(diskMonitor);
   if (terminationTimer) clearTimeout(terminationTimer);
-  if (proxy) await new Promise(resolve => proxy.close(resolve));
+  if (proxy) {
+    proxy.closeIdleConnections?.();
+    proxy.closeAllConnections?.();
+    await new Promise(resolve => proxy.close(resolve));
+  }
   await rm(managedTempDirectory, { recursive: true, force: true }).catch(() => undefined);
   await releaseWriteLock().catch(() => undefined);
 }
