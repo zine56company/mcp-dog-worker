@@ -3,9 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, realpath, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { atomicWriteJson, readJsonFile } from "./atomic-file.mjs";
 
 const CODEX = process.env.CODEX_BIN;
 const WORKSPACE_ROOT = process.env.QWEN_WORKSPACE_ROOT;
@@ -146,15 +147,9 @@ async function validateWorkspace(candidate) {
   return resolved;
 }
 
-async function atomicWriteJson(target, value) {
-  const temporary = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, target);
-}
-
 async function readRun(runId) {
   try {
-    return JSON.parse(await readFile(path.join(runDirectory(runId), "status.json"), "utf8"));
+    return await readJsonFile(path.join(runDirectory(runId), "status.json"));
   } catch (error) {
     if (error?.code === "ENOENT") throw new Error(`Unknown worker run: ${runId}`);
     throw error;

@@ -6,9 +6,53 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { atomicWriteJson, readJsonFile, replaceFileAtomically } from "./atomic-file.mjs";
 
 const router = fileURLToPath(new URL("./router-v2.mjs", import.meta.url));
 const runner = fileURLToPath(new URL("./worker-runner.mjs", import.meta.url));
+
+test("atomic replacement retries transient Windows sharing violations", async () => {
+  let attempts = 0;
+  const delays = [];
+  await replaceFileAtomically("temporary", "target", {
+    renameFile: async () => {
+      attempts += 1;
+      if (attempts < 4) throw Object.assign(new Error("sharing violation"), { code: "EPERM" });
+    },
+    retryWait: async delay => delays.push(delay)
+  });
+  assert.equal(attempts, 4);
+  assert.deepEqual(delays, [10, 20, 40]);
+});
+
+test("atomic JSON replacement stays readable under concurrent status traffic", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "mcp-dog-atomic-test-"));
+  const target = path.join(root, "status.json");
+  await atomicWriteJson(target, { generation: -1 });
+  let reading = true;
+  const observedErrors = [];
+  const readers = Array.from({ length: 4 }, async () => {
+    while (reading) {
+      try {
+        await readJsonFile(target);
+      } catch (error) {
+        observedErrors.push(error);
+      }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  });
+  try {
+    for (let generation = 0; generation < 50; generation += 1) {
+      await atomicWriteJson(target, { generation, payload: "x".repeat(4096) });
+    }
+  } finally {
+    reading = false;
+    await Promise.all(readers);
+  }
+  assert.deepEqual(observedErrors, []);
+  assert.equal((await readJsonFile(target)).generation, 49);
+  await rm(root, { recursive: true, force: true });
+});
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "qwen-worker-mcp-test-"));

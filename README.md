@@ -79,6 +79,10 @@ authoritatively unsafe.
 Durable state lives under `runs/<run_id>/`. A terminal run has both `completion_marker: true` in
 `status.json` and a `completion.json` file. Editing workers take an atomic filesystem lock keyed by
 the canonical workspace path, so two router processes cannot write to the same workspace at once.
+On Windows, status publication retries transient sharing violations and falls back to a guarded
+in-place replacement when a continuously open antivirus/indexer/reader prevents every atomic
+rename. Router and supervisor JSON reads retry that brief replacement window, and a failed
+telemetry write cannot poison later heartbeats or the terminal completion marker.
 
 Run tools are asynchronous by design: an MCP timeout while waiting does not imply worker failure and
 does not orphan the job. The sequential log is capped at 16 MiB per run. After that cap, status calls

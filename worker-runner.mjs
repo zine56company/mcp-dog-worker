@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, lstat, mkdir, readFile, readdir, rename, rm, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, readdir, rename, rm, stat, statfs, unlink } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
+import { atomicWriteFile, atomicWriteJson, readJsonFile } from "./atomic-file.mjs";
 
 const runDirectory = process.argv[2];
 if (!runDirectory || !path.isAbsolute(runDirectory)) {
@@ -77,15 +78,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function atomicWriteJson(target, value) {
-  const temporary = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, target);
-}
-
 function patchStatus(patch) {
-  statusQueue = statusQueue.then(async () => {
-    const current = JSON.parse(await readFile(statusPath, "utf8"));
+  // A failed telemetry publication must not permanently poison every later
+  // heartbeat and the terminal completion marker.
+  statusQueue = statusQueue.catch(() => undefined).then(async () => {
+    const current = await readJsonFile(statusPath);
     const next = { ...current, ...patch, updated_at: nowIso() };
     await atomicWriteJson(statusPath, next);
     return next;
@@ -282,9 +279,7 @@ function appendLog(chunk) {
 
 async function flushTailLogNow() {
   if (!logTruncated || !logTailDirty) return;
-  const temporary = `${logTailPath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(temporary, logTail, { mode: 0o600 });
-  await rename(temporary, logTailPath);
+  await atomicWriteFile(logTailPath, logTail, { mode: 0o600 });
   logTailDirty = false;
 }
 
