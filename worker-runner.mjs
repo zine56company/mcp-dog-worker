@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, rm, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, readdir, rename, rm, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
@@ -16,8 +16,10 @@ const jobPath = path.join(runDirectory, "job.json");
 const logPath = path.join(runDirectory, "worker.log");
 const logTailPath = path.join(runDirectory, "worker-tail.log");
 const cancelPath = path.join(runDirectory, "cancel.requested");
+const IS_WINDOWS = process.platform === "win32";
 const LOCK_POLL_MS = 1000;
 const HEARTBEAT_MS = 5000;
+const CANCEL_CHECK_MS = 250;
 const GIBIBYTE = 1024 ** 3;
 const LOG_LIMIT_BYTES = boundedIntegerEnv("WORKER_LOG_LIMIT_BYTES", 16 * 1024 * 1024, 1024, 64 * 1024 * 1024);
 const LOG_TAIL_BYTES = boundedIntegerEnv("WORKER_LOG_TAIL_BYTES", 512 * 1024, 1024, 4 * 1024 * 1024);
@@ -51,6 +53,7 @@ await mkdir(lockRoot, { recursive: true, mode: 0o700 });
 let child = null;
 let lockDirectory = null;
 let heartbeat = null;
+let cancelMonitor = null;
 let diskMonitor = null;
 let diskCheckInFlight = false;
 let terminationTimer = null;
@@ -99,6 +102,7 @@ function processAlive(pid) {
 }
 
 function processGroupAlive(processGroupId) {
+  if (IS_WINDOWS) return processAlive(processGroupId);
   if (!Number.isSafeInteger(processGroupId) || processGroupId <= 1) return false;
   try {
     process.kill(-processGroupId, 0);
@@ -108,8 +112,23 @@ function processGroupAlive(processGroupId) {
   }
 }
 
-function signalChildGroup(signal) {
+async function taskkillTree(pid) {
+  return await new Promise((resolve, reject) => {
+    const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true
+    });
+    killer.once("error", error => {
+      if (error?.code === "ENOENT") reject(new Error("taskkill.exe is required on Windows"));
+      else reject(error);
+    });
+    killer.once("close", code => resolve(code === 0 || !processAlive(pid)));
+  });
+}
+
+async function signalChildGroup(signal) {
   if (!child?.pid) return false;
+  if (IS_WINDOWS) return await taskkillTree(child.pid);
   try {
     process.kill(-child.pid, signal);
     return true;
@@ -127,6 +146,7 @@ function signalChildGroup(signal) {
 
 function scheduleForcedChildGroupStop() {
   if (!child?.pid || terminationTimer) return;
+  if (IS_WINDOWS) return;
   const processGroupId = child.pid;
   terminationTimer = setTimeout(() => {
     terminationTimer = null;
@@ -141,7 +161,7 @@ function scheduleForcedChildGroupStop() {
 
 async function stopResidualChildGroup() {
   if (!child?.pid || !processGroupAlive(child.pid)) return;
-  signalChildGroup("SIGTERM");
+  await signalChildGroup("SIGTERM");
   await new Promise(resolve => setTimeout(resolve, 100));
   if (processGroupAlive(child.pid)) {
     try {
@@ -160,6 +180,34 @@ async function freeBytes(target) {
 
 async function directoryBytes(target) {
   if (!(await fileExists(target))) return 0;
+  if (IS_WINDOWS) {
+    let total = 0;
+    const pending = [target];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      let info;
+      try {
+        info = await lstat(current);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      if (info.isSymbolicLink()) continue;
+      if (!info.isDirectory()) {
+        total += info.size;
+        continue;
+      }
+      let entries;
+      try {
+        entries = await readdir(current);
+      } catch (error) {
+        if (error?.code === "ENOENT") continue;
+        throw error;
+      }
+      for (const entry of entries) pending.push(path.join(current, entry));
+    }
+    return total;
+  }
   return await new Promise((resolve, reject) => {
     const probe = spawn("/usr/bin/du", ["-sk", target], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -379,6 +427,7 @@ async function startProxy() {
 async function finish(status, exitCode, error = null) {
   await stopResidualChildGroup();
   if (heartbeat) clearInterval(heartbeat);
+  if (cancelMonitor) clearInterval(cancelMonitor);
   if (diskMonitor) clearInterval(diskMonitor);
   if (terminationTimer) clearTimeout(terminationTimer);
   await flushTailLog();
@@ -409,7 +458,7 @@ async function requestCancellation() {
   cancelRequested = true;
   await patchStatus({ status: "cancelling", heartbeat_at: nowIso() }).catch(() => undefined);
   if (child && processGroupAlive(child.pid)) {
-    signalChildGroup("SIGTERM");
+    await signalChildGroup("SIGTERM");
     scheduleForcedChildGroupStop();
   }
 }
@@ -437,7 +486,7 @@ async function enforceDiskReserve() {
     await appendLog(`\n[worker-runner] ${resourceAbortReason}; terminating worker process group\n`);
     await patchStatus({ status: "cancelling", error: resourceAbortReason, heartbeat_at: checkedAt });
     if (child && processGroupAlive(child.pid)) {
-      signalChildGroup("SIGTERM");
+      await signalChildGroup("SIGTERM");
       scheduleForcedChildGroupStop();
     }
   } finally {
@@ -512,12 +561,13 @@ try {
       `The supervisor will terminate the whole worker process group below ${formatGibibytes(MIN_FREE_BYTES)} free.`
     ].join("\n");
     const delegatedPrompt = `${job.prompt}\n\n${resourcePolicy}`;
+    const sandboxMode = IS_WINDOWS ? (job.allow_edits ? "workspace-write" : "read-only") : "danger-full-access";
     const args = [
       "exec",
       "--profile",
       workerConfig.profile,
       "--sandbox",
-      "danger-full-access",
+      sandboxMode,
       "--ignore-rules",
       "--skip-git-repo-check",
       "--config",
@@ -526,8 +576,13 @@ try {
       job.working_directory,
       delegatedPrompt
     ];
-    const childEnv = {
-      ...process.env,
+    const secretNamePattern = /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|AUTH|CREDENTIAL|COOKIE|SESSION|BEARER|ACCESS[_-]?KEY)/i;
+    const childEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) =>
+        !secretNamePattern.test(name) && !name.startsWith("MCP_DOG_") && name !== "WORKER_UPSTREAM_BEARER"
+      )
+    );
+    Object.assign(childEnv, {
       CODEX_HOME: job.worker_codex_home,
       TMPDIR: managedTempDirectory,
       TMP: managedTempDirectory,
@@ -539,15 +594,22 @@ try {
       WORKER_PROXY_BEARER: "router-managed-placeholder",
       WORKER_PROXY_CF_ID: "router-managed-placeholder",
       WORKER_PROXY_CF_SECRET: "router-managed-placeholder"
-    };
-    const seatbelt = createSeatbeltProfile(
-      job.working_directory,
-      job.allow_edits,
-      job.worker_codex_home,
-      managedTempDirectory,
-      cargoTargetDirectory
-    );
-    child = spawn("/usr/bin/sandbox-exec", ["-p", seatbelt, job.codex_bin, ...args], {
+    });
+    const launchCommand = IS_WINDOWS && /\.m?js$/i.test(job.codex_bin) ? process.execPath : job.codex_bin;
+    const launchArgs = IS_WINDOWS && /\.m?js$/i.test(job.codex_bin)
+      ? [job.codex_bin, ...args]
+      : args;
+    if (!IS_WINDOWS) {
+      const seatbelt = createSeatbeltProfile(
+        job.working_directory,
+        job.allow_edits,
+        job.worker_codex_home,
+        managedTempDirectory,
+        cargoTargetDirectory
+      );
+      launchArgs.unshift("-p", seatbelt, launchCommand);
+    }
+    child = spawn(IS_WINDOWS ? launchCommand : "/usr/bin/sandbox-exec", launchArgs, {
       cwd: job.working_directory,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -564,6 +626,11 @@ try {
       void patchStatus({ heartbeat_at: nowIso() }).catch(() => undefined);
       void flushTailLog().catch(() => undefined);
     }, HEARTBEAT_MS);
+    cancelMonitor = setInterval(() => {
+      void fileExists(cancelPath).then(requested => {
+        if (requested) return requestCancellation();
+      }).catch(error => appendLog(`[worker-runner] cancellation monitor error: ${error?.message ?? error}\n`));
+    }, CANCEL_CHECK_MS);
     diskMonitor = setInterval(() => {
       void enforceDiskReserve().catch(error =>
         appendLog(`[worker-runner] disk monitor error: ${error?.message ?? error}\n`)
@@ -603,6 +670,7 @@ try {
 } finally {
   await stopResidualChildGroup().catch(() => undefined);
   if (heartbeat) clearInterval(heartbeat);
+  if (cancelMonitor) clearInterval(cancelMonitor);
   if (diskMonitor) clearInterval(diskMonitor);
   if (terminationTimer) clearTimeout(terminationTimer);
   if (proxy) await new Promise(resolve => proxy.close(resolve));

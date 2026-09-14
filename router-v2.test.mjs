@@ -3,11 +3,12 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const router = new URL("./router-v2.mjs", import.meta.url).pathname;
-const runner = new URL("./worker-runner.mjs", import.meta.url).pathname;
+const router = fileURLToPath(new URL("./router-v2.mjs", import.meta.url));
+const runner = fileURLToPath(new URL("./worker-runner.mjs", import.meta.url));
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "qwen-worker-mcp-test-"));
@@ -28,12 +29,15 @@ const prompt = process.argv.at(-1) ?? "";
 console.log("fake-start:" + prompt);
 if (prompt.includes("huge")) process.stdout.write("A".repeat(4096) + "\\nfinal-tail-marker\\n");
 if (prompt.includes("show-env")) {
+  const sandboxIndex = process.argv.indexOf("--sandbox");
   console.log("worker-env:" + JSON.stringify({
     cargoTarget: process.env.CARGO_TARGET_DIR,
     cargoIncremental: process.env.CARGO_INCREMENTAL,
     devDebug: process.env.CARGO_PROFILE_DEV_DEBUG,
     testDebug: process.env.CARGO_PROFILE_TEST_DEBUG,
-    temp: process.env.TMPDIR
+    temp: process.env.TMPDIR,
+    secretLeak: process.env.TEST_SUPER_SECRET ?? null,
+    sandbox: sandboxIndex >= 0 ? process.argv[sandboxIndex + 1] : null
   }));
 }
 if (prompt.includes("descendant")) {
@@ -78,6 +82,7 @@ async function connect(values) {
       ...(values.minFreeBytes ? { WORKER_MIN_FREE_BYTES: String(values.minFreeBytes) } : {}),
       ...(values.maxTargetBytes ? { WORKER_MAX_TARGET_BYTES: String(values.maxTargetBytes) } : {}),
       WORKER_TERMINATION_GRACE_MS: "500",
+      TEST_SUPER_SECRET: "must-not-reach-worker",
       DEEPSEEK_API_KEY: "test-only-placeholder"
     },
     stderr: "pipe"
@@ -184,6 +189,8 @@ test("worker reuses the workspace target with bounded Cargo profiles and managed
     assert.equal(environment.devDebug, "0");
     assert.equal(environment.testDebug, "0");
     assert.equal(environment.temp, path.join(values.runRoot, run.run_id, "tmp"));
+    assert.equal(environment.secretLeak, null);
+    assert.equal(environment.sandbox, process.platform === "win32" ? "read-only" : "danger-full-access");
     assert.match(terminal.log, /Never override CARGO_TARGET_DIR/);
     await assert.rejects(stat(environment.temp), error => error?.code === "ENOENT");
   } finally {

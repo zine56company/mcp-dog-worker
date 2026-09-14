@@ -23,10 +23,20 @@ function decode(result) {
   return JSON.parse(block.text);
 }
 
-const transport = new StdioClientTransport({
-  command: path.join(root, "start.sh"),
-  stderr: "inherit"
-});
+const windowsLauncherArgs = [path.join(root, "start-windows.mjs")];
+const requestedWorkspace = process.env.MCP_DOG_WORKSPACE_ROOT ?? process.env.QWEN_WORKSPACE_ROOT;
+if (process.env.MCP_DOG_ENV_FILE) windowsLauncherArgs.push("--env-file", process.env.MCP_DOG_ENV_FILE);
+if (requestedWorkspace) windowsLauncherArgs.push("--workspace-root", requestedWorkspace);
+
+const transport = new StdioClientTransport(
+  process.platform === "win32"
+    ? {
+        command: process.execPath,
+        args: windowsLauncherArgs,
+        stderr: "inherit"
+      }
+    : { command: path.join(root, "start.sh"), stderr: "inherit" }
+);
 const client = new Client({ name: "qwen-worker-local-client", version: "1.0.0" });
 await client.connect(transport);
 

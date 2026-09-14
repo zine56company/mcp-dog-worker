@@ -372,7 +372,7 @@ async function cancelRun(args) {
   }
   const directory = runDirectory(run.run_id);
   await writeFile(path.join(directory, "cancel.requested"), `${nowIso()}\n`, { mode: 0o600 });
-  if (processAlive(run.supervisor_pid)) {
+  if (process.platform !== "win32" && processAlive(run.supervisor_pid)) {
     try {
       process.kill(-run.supervisor_pid, "SIGTERM");
     } catch (error) {

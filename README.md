@@ -4,7 +4,7 @@ Local asynchronous Codex worker router. Despite the historical local directory n
 the configured economical workers are DeepSeek V4 Flash and, when credentials are present, GLM
 5.3 Flash.
 
-## Fresh installation (macOS)
+## Fresh installation
 
 ```sh
 git clone https://github.com/zine56company/mcp-dog-worker.git
@@ -12,11 +12,32 @@ cd mcp-dog-worker
 ./setup.sh
 ```
 
-Edit the generated `.env` and set `DEEPSEEK_API_KEY` plus the canonical
-`QWEN_WORKSPACE_ROOT`. `PGS_API_KEY` is optional and enables GLM. The real
-`.env`, isolated `codex-home/`, run logs, and dependencies are ignored by Git.
-The committed `.env.example`, model catalogs, and configuration templates are
-secret-free.
+On Windows PowerShell:
+
+```powershell
+git clone https://github.com/zine56company/mcp-dog-worker.git
+Set-Location mcp-dog-worker
+.\setup.ps1
+```
+
+On macOS, edit the generated `.env` and set `DEEPSEEK_API_KEY` plus the canonical
+`QWEN_WORKSPACE_ROOT`. On Windows, keep the environment file outside the clone; the default location
+is `%USERPROFILE%\.config\mcp-dog-worker\.env`. `PGS_API_KEY` is optional and enables GLM. The real
+`.env`, isolated `codex-home/`, run logs, and dependencies are ignored by Git. The committed
+`.env.example`, model catalogs, and configuration templates are secret-free.
+
+The Windows launcher also accepts `DEEPSEEK_TOKEN_API` as an alias, so an existing external
+`%USERPROFILE%\.config\mcp-dog-worker\.env` does not need to be rewritten. Pass that external file
+and the authorized workspace explicitly when registering Codex:
+
+```toml
+[mcp_servers.mcp_dog_worker]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['C:\absolute\path\mcp-dog-worker\start-windows.mjs', '--env-file', 'C:\Users\you\.config\mcp-dog-worker\.env', '--workspace-root', 'C:\absolute\workspace']
+startup_timeout_sec = 30
+tool_timeout_sec = 7200
+enabled = true
+```
 
 Register the absolute launcher path in Codex:
 
@@ -29,8 +50,13 @@ tool_timeout_sec = 7200
 
 Reload the Codex/VS Code window after changing MCP configuration. Run
 `npm test` to verify async completion, logs, locking, and cancellation without
-calling a paid provider. The worker sandbox currently uses macOS
-`/usr/bin/sandbox-exec`; Linux and Windows installation are not yet supported.
+calling a paid provider. macOS uses `sandbox-exec`; Windows uses Codex's native `read-only` or
+`workspace-write` sandbox and `taskkill /T` for descendant-safe cancellation. Linux is not yet
+supported.
+
+Provider credentials stay in the trusted router/supervisor and reach the provider through a
+per-run loopback proxy. The delegated Codex process receives placeholder proxy credentials, and
+secret-like host environment variables are removed before it is launched.
 
 Each `run_*_worker` call returns immediately with a durable `run_id`. Use `wait_worker` for bounded
 waiting, `worker_status` for heartbeat and incremental logs, `list_worker_runs` to reconnect after a
