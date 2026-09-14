@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "type": "module",
   "scripts": {
-    "test": "node --test router-v2.test.mjs",
+    "test": "node --test --test-concurrency=1 router-v2.test.mjs",
     "worker": "node worker-client.mjs"
   },
   "dependencies": {

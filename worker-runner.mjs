@@ -557,6 +557,7 @@ try {
       "Never override CARGO_TARGET_DIR or create an isolated Cargo target under /tmp or elsewhere.",
       "Do not run cargo clean. Prefer existing evidence and the narrowest verification command that proves the task.",
       "Do not launch a broader build after the requested verification has already passed.",
+      "Keep your final response at or below 500 characters: outcome, changed files, verification, and blocker only.",
       `The supervisor will terminate the whole worker process group if Cargo target exceeds ${formatGibibytes(MAX_TARGET_BYTES)}.`,
       `The supervisor will terminate the whole worker process group below ${formatGibibytes(MIN_FREE_BYTES)} free.`
     ].join("\n");

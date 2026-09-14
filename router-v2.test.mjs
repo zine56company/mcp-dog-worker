@@ -81,6 +81,7 @@ async function connect(values) {
       ...(values.logTail ? { WORKER_LOG_TAIL_BYTES: String(values.logTail) } : {}),
       ...(values.minFreeBytes ? { WORKER_MIN_FREE_BYTES: String(values.minFreeBytes) } : {}),
       ...(values.maxTargetBytes ? { WORKER_MAX_TARGET_BYTES: String(values.maxTargetBytes) } : {}),
+      ...(values.outputLimit ? { WORKER_MAX_OUTPUT_CHARS: String(values.outputLimit) } : {}),
       WORKER_TERMINATION_GRACE_MS: "500",
       TEST_SUPER_SECRET: "must-not-reach-worker",
       DEEPSEEK_API_KEY: "test-only-placeholder"
@@ -168,6 +169,20 @@ test("truncated logs retain a bounded rolling tail with the final worker output"
     assert.doesNotMatch(terminal.log, /final-tail-marker/);
     assert.match(terminal.log_tail, /final-tail-marker/);
     assert(terminal.log_tail_bytes <= values.logTail);
+  } finally {
+    await client.close();
+    await values.cleanup();
+  }
+});
+
+test("configured MCP output cap bounds each returned log chunk", async () => {
+  const values = { ...(await fixture()), outputLimit: 500 };
+  const { client } = await connect(values);
+  try {
+    const run = await start(client, values.workspace, "huge output");
+    const terminal = await waitTerminal(client, run.run_id);
+    assert.equal(terminal.status, "completed");
+    assert(Buffer.byteLength(terminal.log) <= values.outputLimit);
   } finally {
     await client.close();
     await values.cleanup();

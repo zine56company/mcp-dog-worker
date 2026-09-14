@@ -79,6 +79,7 @@ const workspace = option("--workspace-root") ??
   process.env.QWEN_WORKSPACE_ROOT;
 if (!workspace) throw new Error("mcp-dog-worker: pass --workspace-root or set QWEN_WORKSPACE_ROOT");
 process.env.QWEN_WORKSPACE_ROOT = path.resolve(workspace);
+process.env.WORKER_MAX_OUTPUT_CHARS ||= "500";
 
 process.env.CODEX_BIN ||= findNativeCodex() ?? "";
 if (!process.env.CODEX_BIN || !existsSync(process.env.CODEX_BIN)) {

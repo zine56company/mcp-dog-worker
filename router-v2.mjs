@@ -16,13 +16,24 @@ const RUNNER = process.env.QWEN_RUNNER ?? path.join(MCP_ROOT, "worker-runner.mjs
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_PROMPT_CHARS = 250_000;
-const DEFAULT_LOG_CHARS = 12_000;
-const MAX_LOG_CHARS = 100_000;
+const ABSOLUTE_MAX_LOG_CHARS = 100_000;
+const MAX_LOG_CHARS = boundedIntegerEnv(
+  "WORKER_MAX_OUTPUT_CHARS",
+  ABSOLUTE_MAX_LOG_CHARS,
+  1,
+  ABSOLUTE_MAX_LOG_CHARS
+);
+const DEFAULT_LOG_CHARS = Math.min(12_000, MAX_LOG_CHARS);
 const DEFAULT_WAIT_SECONDS = 30;
 const MAX_WAIT_SECONDS = 300;
 
 if (!CODEX || !WORKSPACE_ROOT) {
   throw new Error("CODEX_BIN and QWEN_WORKSPACE_ROOT are required");
+}
+
+function boundedIntegerEnv(name, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
 const resolvedRoot = await realpath(WORKSPACE_ROOT);

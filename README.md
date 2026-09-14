@@ -37,6 +37,9 @@ args = ['C:\absolute\path\mcp-dog-worker\start-windows.mjs', '--env-file', 'C:\U
 startup_timeout_sec = 30
 tool_timeout_sec = 7200
 enabled = true
+
+[mcp_servers.mcp_dog_worker.env]
+WORKER_MAX_OUTPUT_CHARS = "500"
 ```
 
 Register the absolute launcher path in Codex:
@@ -57,6 +60,9 @@ supported.
 Provider credentials stay in the trusted router/supervisor and reach the provider through a
 per-run loopback proxy. The delegated Codex process receives placeholder proxy credentials, and
 secret-like host environment variables are removed before it is launched.
+Windows defaults each returned status/log chunk to 500 characters, and the delegated prompt also
+requires a final response of at most 500 characters. Override `WORKER_MAX_OUTPUT_CHARS` only when a
+larger diagnostic payload is explicitly needed.
 
 Each `run_*_worker` call returns immediately with a durable `run_id`. Use `wait_worker` for bounded
 waiting, `worker_status` for heartbeat and incremental logs, `list_worker_runs` to reconnect after a
