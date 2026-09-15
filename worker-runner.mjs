@@ -4,6 +4,7 @@ import { appendFile, lstat, mkdir, readFile, readdir, rename, rm, stat, statfs, 
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { atomicWriteFile, atomicWriteJson, readJsonFile } from "./atomic-file.mjs";
 
 const runDirectory = process.argv[2];
@@ -51,6 +52,7 @@ const runtimeRoot = path.dirname(runDirectory);
 const lockRoot = path.join(runtimeRoot, "locks");
 const managedTempDirectory = path.join(runDirectory, "tmp");
 const cargoTargetDirectory = path.join(job.working_directory, "target");
+const privateDesktopLauncher = fileURLToPath(new URL("./windows-private-desktop.py", import.meta.url));
 await mkdir(lockRoot, { recursive: true, mode: 0o700 });
 
 let child = null;
@@ -633,7 +635,16 @@ try {
       launchArgs.unshift("-p", seatbelt, launchCommand);
     }
     await appendLog(`[worker-runner] launch platform=${process.platform} sandbox=${sandboxMode} allow_edits=${job.allow_edits}\n`);
-    child = spawn(IS_WINDOWS ? launchCommand : "/usr/bin/sandbox-exec", launchArgs, {
+    const workerCommand = IS_WINDOWS
+      ? (process.env.MCP_DOG_PYTHON ?? "C:\\Python314\\python.exe")
+      : "/usr/bin/sandbox-exec";
+    const workerArgs = IS_WINDOWS
+      ? ["-B", privateDesktopLauncher, launchCommand, ...launchArgs]
+      : launchArgs;
+    if (IS_WINDOWS && (!workerCommand || !path.isAbsolute(workerCommand))) {
+      throw new Error("MCP_DOG_PYTHON must name an absolute Python executable on Windows");
+    }
+    child = spawn(workerCommand, workerArgs, {
       cwd: job.working_directory,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],

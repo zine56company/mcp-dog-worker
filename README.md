@@ -60,6 +60,11 @@ and supervisor review remain active. Set `WORKER_WINDOWS_SANDBOX_MODE=workspace-
 real delegated shell smoke test passes on the host. Windows cancellation uses `taskkill /T` so
 descendants do not survive. Linux is not yet supported.
 
+On Windows, delegated Codex runs through `windows-private-desktop.py`. The helper creates a private
+Win32 desktop that is never switched into view; child and grandchild processes inherit it, so their
+PowerShell or console windows cannot flash over the owner's desktop. `start-windows.mjs` discovers
+Python automatically, or the host can set `MCP_DOG_PYTHON` to an explicit interpreter path.
+
 Provider credentials stay in the trusted router/supervisor and reach the provider through a
 per-run loopback proxy. The delegated Codex process receives placeholder proxy credentials, and
 secret-like host environment variables and parent `CODEX_*` control-plane state are removed before

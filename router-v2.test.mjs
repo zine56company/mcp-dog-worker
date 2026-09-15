@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,24 @@ import { atomicWriteJson, readJsonFile, replaceFileAtomically } from "./atomic-f
 
 const router = fileURLToPath(new URL("./router-v2.mjs", import.meta.url));
 const runner = fileURLToPath(new URL("./worker-runner.mjs", import.meta.url));
+const privateDesktopLauncher = fileURLToPath(
+  new URL("./windows-private-desktop.py", import.meta.url)
+);
+
+test(
+  "private Windows desktop isolates a normally spawned console grandchild",
+  { skip: process.platform !== "win32" },
+  () => {
+    const python = process.env.MCP_DOG_PYTHON ?? "C:\\Python314\\python.exe";
+    const result = spawnSync(python, ["-B", privateDesktopLauncher, "--self-test"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.trim(), /^mcp-dog-[0-9]+-[0-9a-f]{32}$/);
+  }
+);
 
 test("Windows worker processes are launched without console windows", async () => {
   const [routerSource, runnerSource] = await Promise.all([
@@ -22,7 +41,7 @@ test("Windows worker processes are launched without console windows", async () =
   );
   assert.match(
     runnerSource,
-    /spawn\(IS_WINDOWS \? launchCommand : "\/usr\/bin\/sandbox-exec", launchArgs, \{[\s\S]*?windowsHide: true/
+    /child = spawn\(workerCommand, workerArgs, \{[\s\S]*?windowsHide: true/
   );
 });
 

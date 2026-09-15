@@ -61,6 +61,18 @@ function findNativeCodex() {
   return candidates[0] ?? null;
 }
 
+function findPython() {
+  const candidates = [
+    process.env.MCP_DOG_PYTHON,
+    "C:\\Python314\\python.exe",
+    "C:\\Python313\\python.exe",
+    "C:\\Python312\\python.exe",
+    path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Python", "Python314", "python.exe"),
+    path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Python", "Python313", "python.exe")
+  ].filter(Boolean);
+  return candidates.find(candidate => path.isAbsolute(candidate) && existsSync(candidate)) ?? null;
+}
+
 const envFile = option("--env-file") ??
   process.env.MCP_DOG_ENV_FILE ??
   path.join(process.env.USERPROFILE ?? "", ".config", "mcp-dog-worker", ".env");
@@ -80,6 +92,10 @@ const workspace = option("--workspace-root") ??
 if (!workspace) throw new Error("mcp-dog-worker: pass --workspace-root or set QWEN_WORKSPACE_ROOT");
 process.env.QWEN_WORKSPACE_ROOT = path.resolve(workspace);
 process.env.WORKER_MAX_OUTPUT_CHARS ||= "500";
+process.env.MCP_DOG_PYTHON ||= findPython() ?? "";
+if (!process.env.MCP_DOG_PYTHON) {
+  throw new Error("mcp-dog-worker: Python not found; set MCP_DOG_PYTHON to an absolute python.exe");
+}
 
 process.env.CODEX_BIN ||= findNativeCodex() ?? "";
 if (!process.env.CODEX_BIN || !existsSync(process.env.CODEX_BIN)) {
