@@ -637,7 +637,8 @@ try {
       cwd: job.working_directory,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: true
+      detached: true,
+      windowsHide: true
     });
     await patchStatus({
       status: "running",

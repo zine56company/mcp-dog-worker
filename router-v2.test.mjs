@@ -11,6 +11,21 @@ import { atomicWriteJson, readJsonFile, replaceFileAtomically } from "./atomic-f
 const router = fileURLToPath(new URL("./router-v2.mjs", import.meta.url));
 const runner = fileURLToPath(new URL("./worker-runner.mjs", import.meta.url));
 
+test("Windows worker processes are launched without console windows", async () => {
+  const [routerSource, runnerSource] = await Promise.all([
+    readFile(router, "utf8"),
+    readFile(runner, "utf8")
+  ]);
+  assert.match(
+    routerSource,
+    /spawn\(process\.execPath, \[RUNNER, directory\], \{[\s\S]*?windowsHide: true/
+  );
+  assert.match(
+    runnerSource,
+    /spawn\(IS_WINDOWS \? launchCommand : "\/usr\/bin\/sandbox-exec", launchArgs, \{[\s\S]*?windowsHide: true/
+  );
+});
+
 test("atomic replacement retries transient Windows sharing violations", async () => {
   let attempts = 0;
   const delays = [];

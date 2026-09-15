@@ -341,6 +341,7 @@ async function startWorker(worker, args) {
   const child = spawn(process.execPath, [RUNNER, directory], {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
     env: { ...process.env, WORKER_UPSTREAM_BEARER: upstreams[worker].bearer }
   });
   child.unref();
